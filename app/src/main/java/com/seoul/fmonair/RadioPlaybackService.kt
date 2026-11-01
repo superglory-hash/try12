@@ -8,9 +8,12 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
@@ -43,7 +46,6 @@ class RadioPlaybackService : MediaLibraryService() {
         private val _currentStationFlow = MutableStateFlow(StationRepository.initialStations[2])
         val currentStationFlow: StateFlow<RadioStation> = _currentStationFlow
 
-        // 추가: 현재 방송 중인 프로그램 이름 Flow
         private val _currentProgramFlow = MutableStateFlow(
             StationRepository.getScheduledProgramTitle(StationRepository.initialStations[2])
         )
@@ -63,6 +65,7 @@ class RadioPlaybackService : MediaLibraryService() {
     private var player: ExoPlayer? = null
     private var mediaLibrarySession: MediaLibrarySession? = null
     private var programRefreshJob: Job? = null
+    private var hasRetriedFallback: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -72,7 +75,15 @@ class RadioPlaybackService : MediaLibraryService() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
+        // HTTP <-> HTTPS 프로토콜 리다이렉트 및 브라우저 User-Agent 허용
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36")
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(10_000)
+
         val exoPlayer = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(httpDataSourceFactory))
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -101,6 +112,36 @@ class RadioPlaybackService : MediaLibraryService() {
                 }
             }
 
+            override fun onPlayerError(error: PlaybackException) {
+                val station = _currentStationFlow.value
+                // 1순위 스트림 실패 시 fallbackStreamUrl이 있으면 자동으로 예비 스트림 재생 시도
+                if (!hasRetriedFallback && station.fallbackStreamUrl.isNotBlank()) {
+                    hasRetriedFallback = true
+                    _streamStatusFlow.value = "${station.name} 예비 스트림 서버로 전환 중..."
+                    val liveProgram = _currentProgramFlow.value
+                    val metadata = MediaMetadata.Builder()
+                        .setTitle("${station.name} (${station.frequencyText})")
+                        .setArtist("🎙️ $liveProgram")
+                        .setStation(station.name)
+                        .setSubtitle(liveProgram)
+                        .setIsBrowsable(false)
+                        .setIsPlayable(true)
+                        .build()
+
+                    val fallbackItem = MediaItem.Builder()
+                        .setMediaId(station.id)
+                        .setUri(Uri.parse(station.fallbackStreamUrl))
+                        .setMediaMetadata(metadata)
+                        .build()
+
+                    exoPlayer.setMediaItem(fallbackItem)
+                    exoPlayer.prepare()
+                    exoPlayer.play()
+                } else {
+                    _streamStatusFlow.value = "스트림 연결 실패 (우측 상단 연필 아이콘에서 URL 점검 가능)"
+                }
+            }
+
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val title = mediaMetadata.title?.toString()
                 if (!title.isNullOrBlank() && title != _currentStationFlow.value.name) {
@@ -124,9 +165,6 @@ class RadioPlaybackService : MediaLibraryService() {
             .build()
     }
 
-    /**
-     * 라디오 재생 중 1분마다 정각/편성 변경을 감지하여 방송 프로그램 이름을 최신 상태로 유지합니다.
-     */
     private fun startProgramAutoRefresh() {
         programRefreshJob?.cancel()
         programRefreshJob = serviceScope.launch {
@@ -172,7 +210,7 @@ class RadioPlaybackService : MediaLibraryService() {
                     if (p.isPlaying) {
                         p.pause()
                     } else {
-                        if (p.currentMediaItem == null) {
+                        if (p.currentMediaItem == null || p.playbackState == Player.STATE_IDLE) {
                             resolveAndPlayStation(_currentStationFlow.value)
                         } else {
                             p.play()
@@ -185,8 +223,8 @@ class RadioPlaybackService : MediaLibraryService() {
     }
 
     private fun resolveAndPlayStation(station: RadioStation) {
+        hasRetriedFallback = false
         _currentStationFlow.value = station
-        // 즉시 시간대별 편성 프로그램명을 먼저 표시한 뒤 실시간 API로 정밀 갱신
         val initialProgram = StationRepository.getScheduledProgramTitle(station)
         _currentProgramFlow.value = initialProgram
         _streamStatusFlow.value = "${station.broadcaster} 온에어 주소 해석 중..."
