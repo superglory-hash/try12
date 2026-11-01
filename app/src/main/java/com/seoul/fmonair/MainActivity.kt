@@ -23,6 +23,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -106,6 +107,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -778,34 +780,6 @@ fun StationGridCard(
     }
 }
 
-
-
-// MainActivity.kt 내 TopHeaderBar 함수 상단 Row에 painterResource 아이콘 적용
-Row(verticalAlignment = Alignment.CenterVertically) {
-    Surface(
-        modifier = Modifier.size(30.dp),
-        shape = RoundedCornerShape(8.dp),
-        color = Color(0xFF1E293B)
-    ) {
-        androidx.compose.foundation.Image(
-            painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_foreground),
-            contentDescription = "앱 아이콘",
-            modifier = Modifier.fillMaxSize()
-        )
-    }
-    Spacer(modifier = Modifier.width(8.dp))
-    Text(
-        text = "수도권 온에어 FM 라디오",
-        color = Color.White,
-        fontSize = 17.sp,
-        fontWeight = FontWeight.ExtraBold
-    )
-}
-
-
-
-
-
 @Composable
 fun TopHeaderBar(
     remainingSleepSeconds: Int,
@@ -819,27 +793,27 @@ fun TopHeaderBar(
             .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
-    ) {        
-	Row(verticalAlignment = Alignment.CenterVertically) {
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Surface(
-	        modifier = Modifier.size(30.dp),
-        	shape = RoundedCornerShape(8.dp),
-	        color = Color(0xFF1E293B)
+                modifier = Modifier.size(30.dp),
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xFF1E293B)
             ) {
-	        androidx.compose.foundation.Image(
-	            painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_foreground),
-	            contentDescription = "앱 아이콘",
-	            modifier = Modifier.fillMaxSize()
-	        )
-              }
+                Image(
+                    painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                    contentDescription = "앱 아이콘",
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-	        text = "수도권 온에어 FM 라디오",
-	        color = Color.White,
-	        fontSize = 17.sp,
-	        fontWeight = FontWeight.ExtraBold
+                text = "수도권 온에어 FM 라디오",
+                color = Color.White,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.ExtraBold
             )
-	}
+        }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Surface(
@@ -990,7 +964,6 @@ fun NowPlayingHeroCard(
 
                     Spacer(modifier = Modifier.height(6.dp))
 
-                    // ★ 추가: 현재 방송 중인 라디오 프로그램 이름 표시 영역
                     Surface(
                         color = Color(0xFF0F172A).copy(alpha = 0.85f),
                         shape = RoundedCornerShape(10.dp),
