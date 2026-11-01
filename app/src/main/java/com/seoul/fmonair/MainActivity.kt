@@ -101,6 +101,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -255,6 +256,13 @@ fun SeoulRadioAppScreen() {
         context.startService(intent)
     }
 
+    fun togglePlayPause() {
+        val intent = Intent(context, RadioPlaybackService::class.java).apply {
+            action = RadioPlaybackService.ACTION_TOGGLE_PLAY
+        }
+        context.startService(intent)
+    }
+
     fun runSongRecognition() {
         if (isRecognizingAudio) return
         isRecognizingAudio = true
@@ -315,7 +323,21 @@ fun SeoulRadioAppScreen() {
     }
 
     Scaffold(
-        containerColor = Color(0xFF0B1120)
+        containerColor = Color(0xFF0B1120),
+        // ★ 상단 헤더를 topBar에 고정하여 스크롤 시에도 항상 상단에 재생 상태가 표시되도록 개선
+        topBar = {
+            TopHeaderBar(
+                isPlaying = isPlaying,
+                currentStation = currentStation,
+                currentProgram = currentProgram,
+                streamStatus = streamStatus,
+                remainingSleepSeconds = remainingSleepSeconds,
+                onTogglePlay = { togglePlayPause() },
+                onOpenSleepModal = { showSleepTimerModal = true },
+                onOpenCustomUrlModal = { showCustomUrlModal = true },
+                onOpenApkGuideModal = { showApkGuideModal = true }
+            )
+        }
     ) { innerPadding ->
         LazyColumn(
             modifier = Modifier
@@ -328,15 +350,6 @@ fun SeoulRadioAppScreen() {
                 .padding(innerPadding),
             contentPadding = PaddingValues(bottom = 36.dp)
         ) {
-            item {
-                TopHeaderBar(
-                    remainingSleepSeconds = remainingSleepSeconds,
-                    onOpenSleepModal = { showSleepTimerModal = true },
-                    onOpenCustomUrlModal = { showCustomUrlModal = true },
-                    onOpenApkGuideModal = { showApkGuideModal = true }
-                )
-            }
-
             if (!isLyricsFocusMode || selectedTabIndex != 1) {
                 item {
                     NowPlayingHeroCard(
@@ -349,12 +362,7 @@ fun SeoulRadioAppScreen() {
                         isRecognizingAudio = isRecognizingAudio,
                         isCompact = isHeroCompact,
                         onToggleCompact = { isHeroCompact = !isHeroCompact },
-                        onTogglePlay = {
-                            val intent = Intent(context, RadioPlaybackService::class.java).apply {
-                                action = RadioPlaybackService.ACTION_TOGGLE_PLAY
-                            }
-                            context.startService(intent)
-                        },
+                        onTogglePlay = { togglePlayPause() },
                         onPrevChannel = {
                             val intent = Intent(context, RadioPlaybackService::class.java).apply {
                                 action = RadioPlaybackService.ACTION_PREV_STATION
@@ -713,17 +721,34 @@ fun StationGridCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Surface(
-                    color = Color(station.badgeColorHex),
-                    shape = RoundedCornerShape(6.dp)
-                ) {
-                    Text(
-                        text = station.broadcaster,
-                        color = Color.White,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        color = Color(station.badgeColorHex),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = station.broadcaster,
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    if (isSelected && isPlaying) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = Color(0xFF16A34A),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = "재생중",
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                 }
 
                 Icon(
@@ -782,93 +807,252 @@ fun StationGridCard(
 
 @Composable
 fun TopHeaderBar(
+    isPlaying: Boolean,
+    currentStation: RadioStation,
+    currentProgram: String,
+    streamStatus: String,
     remainingSleepSeconds: Int,
+    onTogglePlay: () -> Unit,
     onOpenSleepModal: () -> Unit,
     onOpenCustomUrlModal: () -> Unit,
     onOpenApkGuideModal: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(
-                modifier = Modifier.size(30.dp),
-                shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF1E293B)
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                    contentDescription = "앱 아이콘",
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "수도권 온에어 FM 라디오",
-                color = Color.White,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.ExtraBold
-            )
-        }
+    // 재생 중일 때 상단 라이브 표시등이 깜빡이는 애니메이션
+    val pulseTransition = rememberInfiniteTransition(label = "topLivePulse")
+    val dotAlpha by pulseTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 650, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "dotAlpha"
+    )
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = if (remainingSleepSeconds > 0) Color(0xFF1D4ED8) else Color(0xFF1E293B),
-                modifier = Modifier
-                    .clickable { onOpenSleepModal() }
-                    .padding(end = 6.dp)
+    val isBuffering = streamStatus.contains("해석") || streamStatus.contains("버퍼링") || streamStatus.contains("전환")
+
+    Surface(
+        color = Color(0xFF0B1120).copy(alpha = 0.96f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            // 1열: 앱 타이틀 + 실시간 재생 상태 배지 + 우측 유틸 버튼
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        Icons.Default.Timer,
-                        contentDescription = "취침예약",
-                        tint = Color(0xFF38BDF8),
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Surface(
+                        modifier = Modifier.size(30.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF1E293B)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                            contentDescription = "앱 아이콘",
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (remainingSleepSeconds > 0) {
-                            String.format("%02d:%02d", remainingSleepSeconds / 60, remainingSleepSeconds % 60)
-                        } else {
-                            "취침예약"
-                        },
+                        text = "수도권 FM",
                         color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // ★ 상단 재생 상태 뱃지 (재생중 / 연결중 / 대기중)
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = when {
+                            isPlaying -> Color(0xFF065F46)
+                            isBuffering -> Color(0xFF1E3A8A)
+                            else -> Color(0xFF1E293B)
+                        },
+                        modifier = Modifier.border(
+                            width = 1.dp,
+                            color = when {
+                                isPlaying -> Color(0xFF4ADE80)
+                                isBuffering -> Color(0xFF38BDF8)
+                                else -> Color(0xFF334155)
+                            },
+                            shape = RoundedCornerShape(50)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .alpha(if (isPlaying || isBuffering) dotAlpha else 1f)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when {
+                                            isPlaying -> Color(0xFF4ADE80)
+                                            isBuffering -> Color(0xFF38BDF8)
+                                            else -> Color(0xFF64748B)
+                                        }
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = when {
+                                    isPlaying -> "LIVE 재생중"
+                                    isBuffering -> "연결중..."
+                                    else -> "정지됨"
+                                },
+                                color = when {
+                                    isPlaying -> Color(0xFF4ADE80)
+                                    isBuffering -> Color(0xFF38BDF8)
+                                    else -> Color(0xFF94A3B8)
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = if (remainingSleepSeconds > 0) Color(0xFF1D4ED8) else Color(0xFF1E293B),
+                        modifier = Modifier
+                            .clickable { onOpenSleepModal() }
+                            .padding(end = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Timer,
+                                contentDescription = "취침예약",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = if (remainingSleepSeconds > 0) {
+                                    String.format("%02d:%02d", remainingSleepSeconds / 60, remainingSleepSeconds % 60)
+                                } else {
+                                    "취침"
+                                },
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onOpenCustomUrlModal,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = "커스텀 설정",
+                            tint = Color(0xFF94A3B8),
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onOpenApkGuideModal,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Build,
+                            contentDescription = "APK 빌드 가이드",
+                            tint = Color(0xFF38BDF8),
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
                 }
             }
 
-            IconButton(
-                onClick = onOpenCustomUrlModal,
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    Icons.Default.Edit,
-                    contentDescription = "커스텀 설정",
-                    tint = Color(0xFF94A3B8),
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+            // ★ 2열: 재생 중이거나 연결 중일 때 상단에 나타나는 실시간 ON-AIR 상태 바
+            AnimatedVisibility(visible = isPlaying || isBuffering) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isPlaying) Color(0xFF064E3B).copy(alpha = 0.55f) else Color(0xFF1E293B),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .border(
+                            width = 1.dp,
+                            color = if (isPlaying) Color(0xFF10B981).copy(alpha = 0.6f) else Color(0xFF38BDF8).copy(alpha = 0.4f),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .clickable { onTogglePlay() }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            FiveBarAudioEqualizer(isPlaying = isPlaying)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                color = if (isPlaying) Color(0xFFEF4444) else Color(0xFF2563EB),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
+                                Text(
+                                    text = if (isPlaying) "ON-AIR" else "BUFFER",
+                                    color = Color.White,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "${currentStation.name} (${currentStation.frequencyText}) · ${currentProgram.ifBlank { currentStation.defaultProgram }}",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
 
-            IconButton(
-                onClick = onOpenApkGuideModal,
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    Icons.Default.Build,
-                    contentDescription = "APK 빌드 가이드",
-                    tint = Color(0xFF38BDF8),
-                    modifier = Modifier.size(18.dp)
-                )
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = "재생/일시정지",
+                                tint = Color(0xFF4ADE80),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = if (isPlaying) "재생중" else "대기",
+                                color = Color(0xFF4ADE80),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -898,8 +1082,8 @@ fun NowPlayingHeroCard(
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 4.dp)
             .border(
-                width = 1.dp,
-                color = Color.White.copy(alpha = 0.12f),
+                width = if (isPlaying) 1.5.dp else 1.dp,
+                color = if (isPlaying) Color(0xFF38BDF8).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.12f),
                 shape = RoundedCornerShape(22.dp)
             ),
         shape = RoundedCornerShape(22.dp),
@@ -1006,9 +1190,10 @@ fun NowPlayingHeroCard(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Text(
-                        text = "상태: $streamStatus",
+                        text = if (isPlaying) "● 실시간 스트리밍 재생 중 ($streamStatus)" else "상태: $streamStatus",
                         color = if (isPlaying) Color(0xFF4ADE80) else Color(0xFF94A3B8),
-                        fontSize = 11.sp
+                        fontSize = 11.sp,
+                        fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Normal
                     )
                 }
 
@@ -1067,7 +1252,11 @@ fun NowPlayingHeroCard(
                             .clip(CircleShape)
                             .background(
                                 Brush.linearGradient(
-                                    listOf(Color(0xFF2563EB), Color(0xFF06B6D4))
+                                    if (isPlaying) {
+                                        listOf(Color(0xFF059669), Color(0xFF0284C7))
+                                    } else {
+                                        listOf(Color(0xFF2563EB), Color(0xFF06B6D4))
+                                    }
                                 )
                             )
                     ) {
@@ -1276,7 +1465,7 @@ fun FiveBarAudioEqualizer(isPlaying: Boolean) {
                     .height((20 * barFraction).dp)
                     .clip(RoundedCornerShape(2.dp))
                     .background(
-                        if (isPlaying) Color(0xFF38BDF8) else Color(0xFF475569)
+                        if (isPlaying) Color(0xFF4ADE80) else Color(0xFF475569)
                     )
             )
         }
@@ -1654,9 +1843,10 @@ fun ApkBuildGuideDialog(onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "• 화면 어디서든 위로 드래그하면 상단 플레이어 카드가 위로 스크롤되어 채널 목록과 가사를 넓게 볼 수 있습니다.",
-                    color = Color.White,
-                    fontSize = 12.sp
+                    "• 라디오 재생 시 화면 최상단 고정 바에 [LIVE 재생중] 표시와 현재 방송 정보가 항상 유지됩니다.",
+                    color = Color(0xFF4ADE80),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
                 )
                 Text(
                     "• 상단 카드 오른쪽 위의 화살표(^) 버튼을 누르면 카드를 한 줄짜리 미니 모드로 접어둘 수 있습니다.",
