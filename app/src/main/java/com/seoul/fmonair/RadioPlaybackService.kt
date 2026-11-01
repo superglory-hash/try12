@@ -366,10 +366,10 @@ class RadioPlaybackService : MediaLibraryService() {
                     .setIsPlayable(true)
                     .build()
 
-                MediaItem.Builder()
-                    .setMediaId(station.id)
-                    .setMediaMetadata(meta)
-                    .build()
+                    MediaItem.Builder()
+                        .setMediaId(station.id)
+                        .setMediaMetadata(meta)
+                        .build()
             }
             return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.copyOf(items), params))
         }
