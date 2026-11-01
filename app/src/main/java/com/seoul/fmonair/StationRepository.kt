@@ -18,8 +18,8 @@ object StationRepository {
     private const val KEY_CUSTOM_URL_PREFIX = "custom_url_"
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
@@ -215,6 +215,7 @@ object StationRepository {
             scheduleHours = "24시간 전통·퓨전 국악",
             playlistWebUrl = "https://www.igbf.kr"
         ),
+        // ★ 수정 1: CBS 표준FM 실제 작동 도메인(m-aac.cbs.co.kr) 및 백업 도메인(aac.cbs.co.kr) 적용
         RadioStation(
             id = "cbs_sfm",
             name = "CBS 표준FM",
@@ -224,11 +225,13 @@ object StationRepository {
             category = StationCategory.MUSIC_RELIGION,
             badgeColorHex = 0xFF14B8A6,
             resolverType = StreamResolverType.STATIC_HLS,
-            endpointOrStreamUrl = "https://maac.cbs.co.kr/cbs981/_definst_/cbs981.stream/playlist.m3u8",
+            endpointOrStreamUrl = "https://m-aac.cbs.co.kr/mweb_cbs981/_definst_/cbs981.stream/playlist.m3u8",
+            fallbackStreamUrl = "https://aac.cbs.co.kr/cbs981/_definst_/cbs981.stream/playlist.m3u8",
             defaultProgram = "김현정의 뉴스쇼 / 한판승부",
             scheduleHours = "24시간 시사 & 교양",
             playlistWebUrl = "https://www.cbs.co.kr/radio"
         ),
+        // ★ 수정 2: CBS 음악FM 실제 작동 도메인(m-aac.cbs.co.kr) 및 백업 도메인(aac.cbs.co.kr) 적용
         RadioStation(
             id = "cbs_musicfm",
             name = "CBS 음악FM",
@@ -238,11 +241,13 @@ object StationRepository {
             category = StationCategory.MUSIC_RELIGION,
             badgeColorHex = 0xFF0D9488,
             resolverType = StreamResolverType.STATIC_HLS,
-            endpointOrStreamUrl = "https://maac.cbs.co.kr/cbs939/_definst_/cbs939.stream/playlist.m3u8",
+            endpointOrStreamUrl = "https://m-aac.cbs.co.kr/mweb_cbs939/_definst_/cbs939.stream/playlist.m3u8",
+            fallbackStreamUrl = "https://aac.cbs.co.kr/cbs939/_definst_/cbs939.stream/playlist.m3u8",
             defaultProgram = "아름다운 당신에게 / 배미향의 저녁스케치",
             scheduleHours = "24시간 아름다운 팝 & 가요",
             playlistWebUrl = "https://www.cbs.co.kr/radio"
         ),
+        // ★ 수정 3: FEBC 서울극동방송 실제 Wowza 서버(mlive2.febc.net:1935) 및 백업 서버 적용
         RadioStation(
             id = "febc_fm",
             name = "FEBC 극동방송",
@@ -252,7 +257,8 @@ object StationRepository {
             category = StationCategory.MUSIC_RELIGION,
             badgeColorHex = 0xFFEC4899,
             resolverType = StreamResolverType.STATIC_HLS,
-            endpointOrStreamUrl = "https://mlive1.febc.net/live/seoulfm/playlist.m3u8",
+            endpointOrStreamUrl = "http://mlive2.febc.net:1935/live/seoulfm/playlist.m3u8",
+            fallbackStreamUrl = "http://mlive1.febc.net:1935/live/seoulfm/playlist.m3u8",
             defaultProgram = "사랑의 뜰안 / 찬양과 말씀",
             scheduleHours = "24시간 복음·찬양 방송",
             playlistWebUrl = "https://seoul.febc.net"
@@ -321,9 +327,6 @@ object StationRepository {
         return current
     }
 
-    /**
-     * 한국 표준시(KST) 기준 현재 시간대별 라디오 편성 프로그램 이름 반환
-     */
     fun getScheduledProgramTitle(station: RadioStation): String {
         val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Seoul"))
         val hour = cal.get(Calendar.HOUR_OF_DAY)
@@ -468,7 +471,7 @@ object StationRepository {
                 in 9..10 -> "솔바람 물소리"
                 in 11..13 -> "찬란한 시절 / 바투의 상사디야"
                 in 14..17 -> "글로벌 국악 / 화음"
-                in 18..21 -> "꿈꾸는 아리랑 / 저녁 국악산책"
+                in 18..19 -> "꿈꾸는 아리랑 / 저녁 국악산책"
                 else -> "심야 우리 소리 한마당"
             }
             "cbs_sfm" -> when (hour) {
@@ -518,10 +521,6 @@ object StationRepository {
         }
     }
 
-    /**
-     * 방송사 실시간 온에어 API에서 현재 방송 중인 프로그램 제목을 조회하고,
-     * 응답이 없을 경우 시간대별 편성표 프로그램 이름을 반환합니다.
-     */
     suspend fun resolveCurrentProgramTitle(station: RadioStation): String = withContext(Dispatchers.IO) {
         val scheduledFallback = getScheduledProgramTitle(station)
         try {
@@ -601,6 +600,24 @@ object StationRepository {
         return@withContext scheduledFallback
     }
 
+    /**
+     * STATIC_HLS 채널에 fallbackStreamUrl이 있는 경우, 1순위 주소가 응답하지 않으면
+     * 자동으로 fallbackStreamUrl을 선택해 반환합니다.
+     */
+    private fun isHlsEndpointAlive(url: String): Boolean {
+        return try {
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0")
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                resp.isSuccessful
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun resolvePlayableStreamUrl(station: RadioStation): String = withContext(Dispatchers.IO) {
         if (!station.customStreamUrl.isNullOrBlank()) {
             return@withContext station.customStreamUrl.trim()
@@ -608,6 +625,9 @@ object StationRepository {
 
         val endpoint = station.endpointOrStreamUrl
         if (station.resolverType == StreamResolverType.STATIC_HLS) {
+            if (station.fallbackStreamUrl.isNotBlank() && !isHlsEndpointAlive(endpoint)) {
+                return@withContext station.fallbackStreamUrl
+            }
             return@withContext endpoint
         }
 
