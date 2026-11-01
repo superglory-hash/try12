@@ -1,9 +1,14 @@
 package com.seoul.fmonair
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import androidx.annotation.OptIn
+import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -37,6 +42,9 @@ class RadioPlaybackService : MediaLibraryService() {
 
     companion object {
         private const val ROOT_ID = "seoul_fm_root"
+        private const val NOTIFICATION_CHANNEL_ID = "seoul_fm_onair_channel"
+        private const val NOTIFICATION_ID = 1001
+
         const val ACTION_PLAY_STATION = "com.seoul.fmonair.ACTION_PLAY_STATION"
         const val ACTION_NEXT_STATION = "com.seoul.fmonair.ACTION_NEXT_STATION"
         const val ACTION_PREV_STATION = "com.seoul.fmonair.ACTION_PREV_STATION"
@@ -69,13 +77,13 @@ class RadioPlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        createNotificationChannel()
 
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
-        // HTTP <-> HTTPS 프로토콜 리다이렉트 및 브라우저 User-Agent 허용
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36")
             .setAllowCrossProtocolRedirects(true)
@@ -94,10 +102,20 @@ class RadioPlaybackService : MediaLibraryService() {
                 _isPlayingFlow.value = isPlaying
                 if (isPlaying) {
                     _streamStatusFlow.value = "ON-AIR 실시간 스트리밍 중"
+                    startForeground(NOTIFICATION_ID, buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, true))
                     startProgramAutoRefresh()
-                } else if (exoPlayer.playbackState == Player.STATE_IDLE || !exoPlayer.playWhenReady) {
+                } else {
                     _streamStatusFlow.value = "일시정지됨"
                     programRefreshJob?.cancel()
+                    // 일시정지 시 포그라운드 해제 (알림바 유지 또는 스와이프 제거 가능)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        stopForeground(STOP_FOREGROUND_DETACH)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        stopForeground(false)
+                    }
+                    val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    notificationManager.notify(NOTIFICATION_ID, buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, false))
                 }
                 RadioWidgetReceiver.notifyWidgetUpdate(this@RadioPlaybackService)
             }
@@ -114,7 +132,6 @@ class RadioPlaybackService : MediaLibraryService() {
 
             override fun onPlayerError(error: PlaybackException) {
                 val station = _currentStationFlow.value
-                // 1순위 스트림 실패 시 fallbackStreamUrl이 있으면 자동으로 예비 스트림 재생 시도
                 if (!hasRetriedFallback && station.fallbackStreamUrl.isNotBlank()) {
                     hasRetriedFallback = true
                     _streamStatusFlow.value = "${station.name} 예비 스트림 서버로 전환 중..."
@@ -165,6 +182,56 @@ class RadioPlaybackService : MediaLibraryService() {
             .build()
     }
 
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "수도권 FM 라디오 온에어 재생",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "백그라운드 라디오 스트리밍 및 미디어 컨트롤"
+                setShowBadge(false)
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildPlaybackNotification(station: RadioStation, programTitle: String, isPlaying: Boolean): Notification {
+        val openIntent = Intent(this, MainActivity::class.java)
+        val openPi = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+        val toggleIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_TOGGLE_PLAY }
+        val togglePi = PendingIntent.getService(this, 1, toggleIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+        val nextIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_STATION }
+        val nextPi = PendingIntent.getService(this, 2, nextIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("${station.name} (${station.frequencyText})")
+            .setContentText("🎙️ $programTitle")
+            // 상태표시줄에 표시될 아이콘 (앞서 만든 네온 라디오 아이콘 활용)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentIntent(openPi)
+            .setOngoing(isPlaying)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setStyle(
+                androidx.media.app.NotificationCompat.MediaStyle()
+                    .setShowActionsInCompactView(0)
+            )
+            .addAction(
+                if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (isPlaying) "일시정지" else "재생",
+                togglePi
+            )
+            .addAction(
+                android.R.drawable.ic_media_next,
+                "다음 채널",
+                nextPi
+            )
+            .build()
+    }
+
     private fun startProgramAutoRefresh() {
         programRefreshJob?.cancel()
         programRefreshJob = serviceScope.launch {
@@ -173,6 +240,8 @@ class RadioPlaybackService : MediaLibraryService() {
                 val latestProgram = StationRepository.resolveCurrentProgramTitle(station)
                 if (_currentProgramFlow.value != latestProgram) {
                     _currentProgramFlow.value = latestProgram
+                    val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    notificationManager.notify(NOTIFICATION_ID, buildPlaybackNotification(station, latestProgram, _isPlayingFlow.value))
                     RadioWidgetReceiver.notifyWidgetUpdate(this@RadioPlaybackService)
                 }
                 delay(60_000L)
@@ -260,7 +329,6 @@ class RadioPlaybackService : MediaLibraryService() {
     }
 
     private inner class LibrarySessionCallback : MediaLibrarySession.Callback {
-
         override fun onGetLibraryRoot(
             session: MediaLibrarySession,
             browser: MediaSession.ControllerInfo,
