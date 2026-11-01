@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 딥 네이비 & 다크 슬레이트 그라데이션 배경 -->
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF070B14" />
+                <item android:offset="0.55" android:color="#FF0F172A" />
+                <item android:offset="1.0" android:color="#FF1E1B4B" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 배경 네온 글로우 동심원 (전파 확산 효과) -->
+    <path
+        android:pathData="M54,54m-42,0a42,42 0,1 1,84 0a42,42 0,1 1,-84 0"
+        android:strokeWidth="0.8"
+        android:strokeColor="#2238BDF8"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M54,54m-32,0a32,32 0,1 1,64 0a32,32 0,1 1,-64 0"
+        android:strokeWidth="1.0"
+        android:strokeColor="#33818CF8"
+        android:fillColor="#00000000" />
+
+    <!-- 상단 은은한 하이라이트 광원 -->
+    <path
+        android:pathData="M54,28m-24,0a24,24 0,1 1,48 0a24,24 0,1 1,-48 0"
+        android:fillColor="#1438BDF8" />
+</vector>
