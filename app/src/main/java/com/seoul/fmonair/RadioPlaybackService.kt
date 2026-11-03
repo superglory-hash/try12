@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import androidx.annotation.OptIn
@@ -43,13 +44,17 @@ class RadioPlaybackService : MediaLibraryService() {
 
     companion object {
         private const val ROOT_ID = "seoul_fm_root"
-        private const val NOTIFICATION_CHANNEL_ID = "seoul_fm_onair_channel"
+        // 상단 상태표시줄 아이콘이 숨겨지지 않도록 새 채널 ID 사용
+        private const val NOTIFICATION_CHANNEL_ID = "seoul_fm_onair_status_v2"
         private const val NOTIFICATION_ID = 1001
 
         const val ACTION_PLAY_STATION = "com.seoul.fmonair.ACTION_PLAY_STATION"
         const val ACTION_NEXT_STATION = "com.seoul.fmonair.ACTION_NEXT_STATION"
         const val ACTION_PREV_STATION = "com.seoul.fmonair.ACTION_PREV_STATION"
         const val ACTION_TOGGLE_PLAY = "com.seoul.fmonair.ACTION_TOGGLE_PLAY"
+        const val ACTION_STOP_PLAYBACK = "com.seoul.fmonair.ACTION_STOP_PLAYBACK"
+        const val ACTION_EXIT_APP = "com.seoul.fmonair.ACTION_EXIT_APP"
+        const val ACTION_ENSURE_NOTIFICATION = "com.seoul.fmonair.ACTION_ENSURE_NOTIFICATION"
         const val EXTRA_STATION_ID = "extra_station_id"
 
         private val _currentStationFlow = MutableStateFlow(StationRepository.initialStations[2])
@@ -68,6 +73,14 @@ class RadioPlaybackService : MediaLibraryService() {
 
         private val _liveMetadataTitleFlow = MutableStateFlow<String?>(null)
         val liveMetadataTitleFlow: StateFlow<String?> = _liveMetadataTitleFlow
+
+        // 상단 알림에서 [앱 종료] 클릭 시 MainActivity까지 완전히 닫기 위한 신호
+        private val _shouldExitAppFlow = MutableStateFlow(false)
+        val shouldExitAppFlow: StateFlow<Boolean> = _shouldExitAppFlow
+
+        fun resetExitSignal() {
+            _shouldExitAppFlow.value = false
+        }
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -103,20 +116,15 @@ class RadioPlaybackService : MediaLibraryService() {
                 _isPlayingFlow.value = isPlaying
                 if (isPlaying) {
                     _streamStatusFlow.value = "ON-AIR 실시간 스트리밍 중"
-                    startForeground(
-                        NOTIFICATION_ID,
+                    promoteToForeground(
                         buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, true)
                     )
                     startProgramAutoRefresh()
                 } else {
-                    _streamStatusFlow.value = "일시정지됨"
-                    programRefreshJob?.cancel()
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        stopForeground(STOP_FOREGROUND_DETACH)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        stopForeground(false)
+                    if (_streamStatusFlow.value != "재생 중지됨") {
+                        _streamStatusFlow.value = "일시정지됨"
                     }
+                    programRefreshJob?.cancel()
                     val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     notificationManager.notify(
                         NOTIFICATION_ID,
@@ -128,9 +136,19 @@ class RadioPlaybackService : MediaLibraryService() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
-                    Player.STATE_BUFFERING -> _streamStatusFlow.value = "스트림 토큰 해석 및 버퍼링 중..."
+                    Player.STATE_BUFFERING -> {
+                        _streamStatusFlow.value = "스트림 토큰 해석 및 버퍼링 중..."
+                        promoteToForeground(
+                            buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, true)
+                        )
+                    }
                     Player.STATE_READY -> {
-                        if (exoPlayer.isPlaying) _streamStatusFlow.value = "ON-AIR 실시간 스트리밍 중"
+                        if (exoPlayer.isPlaying) {
+                            _streamStatusFlow.value = "ON-AIR 실시간 스트리밍 중"
+                            promoteToForeground(
+                                buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, true)
+                            )
+                        }
                     }
                     Player.STATE_ENDED, Player.STATE_IDLE -> {}
                 }
@@ -188,15 +206,35 @@ class RadioPlaybackService : MediaLibraryService() {
             .build()
     }
 
+    private fun promoteToForeground(notification: Notification) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(NOTIFICATION_ID, notification)
+        }
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // IMPORTANCE_DEFAULT + 무음 설정으로 상단 상태표시줄에 아이콘이 항상 표시되도록 설정
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                "수도권 FM 라디오 온에어 재생",
-                NotificationManager.IMPORTANCE_LOW
+                "수도권 FM 라디오 상단 재생 컨트롤",
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "백그라운드 라디오 스트리밍 및 미디어 컨트롤"
-                setShowBadge(false)
+                description = "홈 화면 이동 시 상단 상태표시줄에 재생 상태 표시 및 중지/종료 버튼 제공"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(true)
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
@@ -208,7 +246,9 @@ class RadioPlaybackService : MediaLibraryService() {
         programTitle: String,
         isPlaying: Boolean
     ): Notification {
-        val openIntent = Intent(this, MainActivity::class.java)
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
         val openPi = PendingIntent.getActivity(
             this,
             0,
@@ -216,53 +256,68 @@ class RadioPlaybackService : MediaLibraryService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val prevIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_PREV_STATION }
-        val prevPi = PendingIntent.getService(
-            this,
-            1,
-            prevIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
+        // 1. 일시정지 / 재생 버튼
         val toggleIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_TOGGLE_PLAY }
         val togglePi = PendingIntent.getService(
             this,
-            2,
+            1,
             toggleIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val nextIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_STATION }
-        val nextPi = PendingIntent.getService(
+        // 2. 재생 완전 중지 버튼
+        val stopIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP_PLAYBACK }
+        val stopPi = PendingIntent.getService(
             this,
-            3,
-            nextIntent,
+            2,
+            stopIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val statusLabel = if (isPlaying) "ON-AIR 생방송 재생 중" else "일시정지됨"
+        // 3. 프로그램 완전 종료 버튼
+        val exitIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_EXIT_APP }
+        val exitPi = PendingIntent.getService(
+            this,
+            3,
+            exitIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val statusPrefix = if (isPlaying) "🔴 [재생중]" else "⏸ [일시정지]"
+        val statusLabel = if (isPlaying) "ON-AIR 실시간 재생 중" else "일시정지됨 (대기 중)"
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("${station.name} (${station.frequencyText})")
+            .setContentTitle("$statusPrefix ${station.name} (${station.frequencyText})")
             .setContentText("🎙️ $programTitle")
             .setSubText(statusLabel)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(if (isPlaying) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause)
             .setContentIntent(openPi)
             .setOngoing(isPlaying)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .setBigContentTitle("${station.name} · ${station.frequencyText}")
-                    .bigText("현재 프로그램: $programTitle\n상태: $statusLabel")
+                    .setBigContentTitle("$statusPrefix ${station.name} · ${station.frequencyText}")
+                    .bigText("🎙️ 현재 프로그램: $programTitle\n하단 버튼으로 재생을 중지하거나 앱을 완전히 종료할 수 있습니다.")
             )
-            .addAction(android.R.drawable.ic_media_previous, "이전 채널", prevPi)
             .addAction(
                 if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-                if (isPlaying) "일시정지" else "재생",
+                if (isPlaying) "일시정지" else "다시재생",
                 togglePi
             )
-            .addAction(android.R.drawable.ic_media_next, "다음 채널", nextPi)
+            .addAction(
+                android.R.drawable.ic_delete,
+                "재생중지",
+                stopPi
+            )
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "앱 종료",
+                exitPi
+            )
             .build()
     }
 
@@ -324,6 +379,60 @@ class RadioPlaybackService : MediaLibraryService() {
                     }
                 }
             }
+            ACTION_STOP_PLAYBACK -> {
+                programRefreshJob?.cancel()
+                player?.stop()
+                _isPlayingFlow.value = false
+                _streamStatusFlow.value = "재생 중지됨"
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_DETACH)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(false)
+                }
+                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                notificationManager.notify(
+                    NOTIFICATION_ID,
+                    buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, false)
+                )
+                RadioWidgetReceiver.notifyWidgetUpdate(this)
+            }
+            ACTION_EXIT_APP -> {
+                programRefreshJob?.cancel()
+                player?.stop()
+                player?.clearMediaItems()
+                _isPlayingFlow.value = false
+                _streamStatusFlow.value = "종료됨"
+                RadioWidgetReceiver.notifyWidgetUpdate(this)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
+                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                notificationManager.cancel(NOTIFICATION_ID)
+
+                // MainActivity 종료 트리거 후 서비스 완전 종료
+                _shouldExitAppFlow.value = true
+                stopSelf()
+            }
+            ACTION_ENSURE_NOTIFICATION -> {
+                // 홈 버튼을 눌러 백그라운드로 나갈 때 상단 알림 즉시 갱신 및 표시
+                val station = _currentStationFlow.value
+                val program = _currentProgramFlow.value
+                val playing = _isPlayingFlow.value || player?.isPlaying == true
+                if (playing) {
+                    promoteToForeground(buildPlaybackNotification(station, program, true))
+                } else {
+                    val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    notificationManager.notify(
+                        NOTIFICATION_ID,
+                        buildPlaybackNotification(station, program, false)
+                    )
+                }
+            }
         }
         return START_STICKY
     }
@@ -334,12 +443,16 @@ class RadioPlaybackService : MediaLibraryService() {
         val initialProgram = StationRepository.getScheduledProgramTitle(station)
         _currentProgramFlow.value = initialProgram
         _streamStatusFlow.value = "${station.broadcaster} 온에어 주소 해석 중..."
+
+        // 재생 시작 즉시 상단 상태표시줄에 알림 등록
+        promoteToForeground(buildPlaybackNotification(station, initialProgram, true))
         RadioWidgetReceiver.notifyWidgetUpdate(this)
 
         serviceScope.launch {
             val resolvedUrl = StationRepository.resolvePlayableStreamUrl(station)
             val liveProgram = StationRepository.resolveCurrentProgramTitle(station)
             _currentProgramFlow.value = liveProgram
+            promoteToForeground(buildPlaybackNotification(station, liveProgram, true))
             RadioWidgetReceiver.notifyWidgetUpdate(this@RadioPlaybackService)
 
             val metadata = MediaMetadata.Builder()
