@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -47,6 +48,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -64,6 +66,7 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -115,12 +118,30 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        RadioPlaybackService.resetExitSignal()
+
+        // 상단 알림바에서 [앱 종료]를 누르면 백그라운드 상태에서도 즉시 액티비티 및 태스크 완전 종료
+        lifecycleScope.launch {
+            RadioPlaybackService.shouldExitAppFlow.collect { shouldExit ->
+                if (shouldExit) {
+                    RadioPlaybackService.resetExitSignal()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        finishAndRemoveTask()
+                    } else {
+                        finishAffinity()
+                    }
+                }
+            }
+        }
+
         setContent {
             val darkGlassColorScheme = darkColorScheme(
                 primary = Color(0xFF38BDF8),
@@ -133,6 +154,24 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkGlassColorScheme) {
                 SeoulRadioAppScreen()
             }
+        }
+    }
+
+    /**
+     * 사용자가 스마트폰의 홈 버튼을 눌러 바탕화면으로 나갈 때 호출됨
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (RadioPlaybackService.isPlayingFlow.value) {
+            val ensureIntent = Intent(this, RadioPlaybackService::class.java).apply {
+                action = RadioPlaybackService.ACTION_ENSURE_NOTIFICATION
+            }
+            startService(ensureIntent)
+            Toast.makeText(
+                this,
+                "상단 알림창에서 라디오 재생 중지 및 앱 종료가 가능합니다.",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 }
@@ -170,12 +209,36 @@ fun SeoulRadioAppScreen() {
     var showCustomUrlModal by remember { mutableStateOf(false) }
     var showApkGuideModal by remember { mutableStateOf(false) }
 
+    // 안드로이드 13(API 33) 이상 상단 상태표시줄 알림 권한 요청 런처
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted && isPlaying) {
+            val ensureIntent = Intent(context, RadioPlaybackService::class.java).apply {
+                action = RadioPlaybackService.ACTION_ENSURE_NOTIFICATION
+            }
+            context.startService(ensureIntent)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     val defaultLyricLines = remember {
         listOf(
             "상단 [BGM 인식] 버튼을 누르면 현재 라디오 소리를 분석합니다",
             "방송국 실시간 선곡표와 5초 오디오 지문 인식을 동시에 수행합니다",
             "인식된 곡의 싱크 가사(LRC)를 LRCLIB에서 즉시 불러옵니다",
-            "화면 전체를 위아래로 드래그하여 넓게 스크롤할 수 있습니다"
+            "홈 버튼을 눌러도 상단 알림창에서 중지·종료할 수 있습니다"
         )
     }
 
@@ -239,7 +302,7 @@ fun SeoulRadioAppScreen() {
                 selectedSleepOption = SleepTimerOption.OFF
                 if (isPlaying) {
                     val stopIntent = Intent(context, RadioPlaybackService::class.java).apply {
-                        action = RadioPlaybackService.ACTION_TOGGLE_PLAY
+                        action = RadioPlaybackService.ACTION_STOP_PLAYBACK
                     }
                     context.startService(stopIntent)
                 }
@@ -259,6 +322,20 @@ fun SeoulRadioAppScreen() {
     fun togglePlayPause() {
         val intent = Intent(context, RadioPlaybackService::class.java).apply {
             action = RadioPlaybackService.ACTION_TOGGLE_PLAY
+        }
+        context.startService(intent)
+    }
+
+    fun stopPlayback() {
+        val intent = Intent(context, RadioPlaybackService::class.java).apply {
+            action = RadioPlaybackService.ACTION_STOP_PLAYBACK
+        }
+        context.startService(intent)
+    }
+
+    fun exitProgram() {
+        val intent = Intent(context, RadioPlaybackService::class.java).apply {
+            action = RadioPlaybackService.ACTION_EXIT_APP
         }
         context.startService(intent)
     }
@@ -324,7 +401,6 @@ fun SeoulRadioAppScreen() {
 
     Scaffold(
         containerColor = Color(0xFF0B1120),
-        // ★ 상단 헤더를 topBar에 고정하여 스크롤 시에도 항상 상단에 재생 상태가 표시되도록 개선
         topBar = {
             TopHeaderBar(
                 isPlaying = isPlaying,
@@ -333,6 +409,8 @@ fun SeoulRadioAppScreen() {
                 streamStatus = streamStatus,
                 remainingSleepSeconds = remainingSleepSeconds,
                 onTogglePlay = { togglePlayPause() },
+                onStopPlay = { stopPlayback() },
+                onExitApp = { exitProgram() },
                 onOpenSleepModal = { showSleepTimerModal = true },
                 onOpenCustomUrlModal = { showCustomUrlModal = true },
                 onOpenApkGuideModal = { showApkGuideModal = true }
@@ -363,6 +441,7 @@ fun SeoulRadioAppScreen() {
                         isCompact = isHeroCompact,
                         onToggleCompact = { isHeroCompact = !isHeroCompact },
                         onTogglePlay = { togglePlayPause() },
+                        onStopPlay = { stopPlayback() },
                         onPrevChannel = {
                             val intent = Intent(context, RadioPlaybackService::class.java).apply {
                                 action = RadioPlaybackService.ACTION_PREV_STATION
@@ -813,11 +892,12 @@ fun TopHeaderBar(
     streamStatus: String,
     remainingSleepSeconds: Int,
     onTogglePlay: () -> Unit,
+    onStopPlay: () -> Unit,
+    onExitApp: () -> Unit,
     onOpenSleepModal: () -> Unit,
     onOpenCustomUrlModal: () -> Unit,
     onOpenApkGuideModal: () -> Unit
 ) {
-    // 재생 중일 때 상단 라이브 표시등이 깜빡이는 애니메이션
     val pulseTransition = rememberInfiniteTransition(label = "topLivePulse")
     val dotAlpha by pulseTransition.animateFloat(
         initialValue = 1.0f,
@@ -840,7 +920,6 @@ fun TopHeaderBar(
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp, vertical = 8.dp)
         ) {
-            // 1열: 앱 타이틀 + 실시간 재생 상태 배지 + 우측 유틸 버튼
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -871,7 +950,6 @@ fun TopHeaderBar(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
 
-                    // ★ 상단 재생 상태 뱃지 (재생중 / 연결중 / 대기중)
                     Surface(
                         shape = RoundedCornerShape(50),
                         color = when {
@@ -980,10 +1058,23 @@ fun TopHeaderBar(
                             modifier = Modifier.size(17.dp)
                         )
                     }
+
+                    // 상단 앱 완전 종료 버튼
+                    IconButton(
+                        onClick = onExitApp,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "프로그램 종료",
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
 
-            // ★ 2열: 재생 중이거나 연결 중일 때 상단에 나타나는 실시간 ON-AIR 상태 바
+            // 재생 중이거나 연결 중일 때 상단에 나타나는 실시간 ON-AIR 상태 바 (일시정지 / 중지 / 종료 버튼 포함)
             AnimatedVisibility(visible = isPlaying || isBuffering) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -996,7 +1087,6 @@ fun TopHeaderBar(
                             color = if (isPlaying) Color(0xFF10B981).copy(alpha = 0.6f) else Color(0xFF38BDF8).copy(alpha = 0.4f),
                             shape = RoundedCornerShape(12.dp)
                         )
-                        .clickable { onTogglePlay() }
                 ) {
                     Row(
                         modifier = Modifier
@@ -1007,7 +1097,9 @@ fun TopHeaderBar(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onTogglePlay() }
                         ) {
                             FiveBarAudioEqualizer(isPlaying = isPlaying)
                             Spacer(modifier = Modifier.width(6.dp))
@@ -1037,19 +1129,57 @@ fun TopHeaderBar(
                         Spacer(modifier = Modifier.width(6.dp))
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = "재생/일시정지",
-                                tint = Color(0xFF4ADE80),
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(2.dp))
-                            Text(
-                                text = if (isPlaying) "재생중" else "대기",
-                                color = Color(0xFF4ADE80),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF0F172A),
+                                modifier = Modifier.clickable { onStopPlay() }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Stop,
+                                        contentDescription = "재생 중지",
+                                        tint = Color(0xFFFACC15),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "중지",
+                                        color = Color(0xFFFACC15),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(5.dp))
+
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF7F1D1D),
+                                modifier = Modifier.clickable { onExitApp() }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "앱 종료",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "종료",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1070,6 +1200,7 @@ fun NowPlayingHeroCard(
     isCompact: Boolean,
     onToggleCompact: () -> Unit,
     onTogglePlay: () -> Unit,
+    onStopPlay: () -> Unit,
     onPrevChannel: () -> Unit,
     onNextChannel: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -1243,7 +1374,7 @@ fun NowPlayingHeroCard(
                         Icon(Icons.Default.SkipPrevious, contentDescription = "이전 채널", tint = Color.White)
                     }
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
 
                     IconButton(
                         onClick = onTogglePlay,
@@ -1268,7 +1399,19 @@ fun NowPlayingHeroCard(
                         )
                     }
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    IconButton(
+                        onClick = onStopPlay,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF0F172A))
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = "재생 중지", tint = Color(0xFFFACC15))
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
 
                     IconButton(
                         onClick = onNextChannel,
@@ -1843,7 +1986,7 @@ fun ApkBuildGuideDialog(onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "• 라디오 재생 시 화면 최상단 고정 바에 [LIVE 재생중] 표시와 현재 방송 정보가 항상 유지됩니다.",
+                    "• 재생 중 스마트폰 홈 버튼을 눌러 나가도 상단 상태표시줄과 알림창에 [재생중] 표시가 유지되며, 알림창에서 바로 [일시정지], [재생중지], [앱 종료]를 누를 수 있습니다.",
                     color = Color(0xFF4ADE80),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
