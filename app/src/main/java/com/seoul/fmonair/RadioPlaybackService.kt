@@ -103,7 +103,10 @@ class RadioPlaybackService : MediaLibraryService() {
                 _isPlayingFlow.value = isPlaying
                 if (isPlaying) {
                     _streamStatusFlow.value = "ON-AIR 실시간 스트리밍 중"
-                    startForeground(NOTIFICATION_ID, buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, true))
+                    startForeground(
+                        NOTIFICATION_ID,
+                        buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, true)
+                    )
                     startProgramAutoRefresh()
                 } else {
                     _streamStatusFlow.value = "일시정지됨"
@@ -115,7 +118,10 @@ class RadioPlaybackService : MediaLibraryService() {
                         stopForeground(false)
                     }
                     val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    notificationManager.notify(NOTIFICATION_ID, buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, false))
+                    notificationManager.notify(
+                        NOTIFICATION_ID,
+                        buildPlaybackNotification(_currentStationFlow.value, _currentProgramFlow.value, false)
+                    )
                 }
                 RadioWidgetReceiver.notifyWidgetUpdate(this@RadioPlaybackService)
             }
@@ -197,37 +203,66 @@ class RadioPlaybackService : MediaLibraryService() {
         }
     }
 
-    private fun buildPlaybackNotification(station: RadioStation, programTitle: String, isPlaying: Boolean): Notification {
+    private fun buildPlaybackNotification(
+        station: RadioStation,
+        programTitle: String,
+        isPlaying: Boolean
+    ): Notification {
         val openIntent = Intent(this, MainActivity::class.java)
-        val openPi = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val openPi = PendingIntent.getActivity(
+            this,
+            0,
+            openIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val prevIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_PREV_STATION }
+        val prevPi = PendingIntent.getService(
+            this,
+            1,
+            prevIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
         val toggleIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_TOGGLE_PLAY }
-        val togglePi = PendingIntent.getService(this, 1, toggleIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val togglePi = PendingIntent.getService(
+            this,
+            2,
+            toggleIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
         val nextIntent = Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_STATION }
-        val nextPi = PendingIntent.getService(this, 2, nextIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val nextPi = PendingIntent.getService(
+            this,
+            3,
+            nextIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val statusLabel = if (isPlaying) "ON-AIR 생방송 재생 중" else "일시정지됨"
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("${station.name} (${station.frequencyText})")
             .setContentText("🎙️ $programTitle")
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSubText(statusLabel)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(openPi)
             .setOngoing(isPlaying)
+            .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setStyle(
-                androidx.media.app.NotificationCompat.MediaStyle()
-                    .setShowActionsInCompactView(0)
+                NotificationCompat.BigTextStyle()
+                    .setBigContentTitle("${station.name} · ${station.frequencyText}")
+                    .bigText("현재 프로그램: $programTitle\n상태: $statusLabel")
             )
+            .addAction(android.R.drawable.ic_media_previous, "이전 채널", prevPi)
             .addAction(
                 if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
                 if (isPlaying) "일시정지" else "재생",
                 togglePi
             )
-            .addAction(
-                android.R.drawable.ic_media_next,
-                "다음 채널",
-                nextPi
-            )
+            .addAction(android.R.drawable.ic_media_next, "다음 채널", nextPi)
             .build()
     }
 
@@ -240,7 +275,10 @@ class RadioPlaybackService : MediaLibraryService() {
                 if (_currentProgramFlow.value != latestProgram) {
                     _currentProgramFlow.value = latestProgram
                     val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    notificationManager.notify(NOTIFICATION_ID, buildPlaybackNotification(station, latestProgram, _isPlayingFlow.value))
+                    notificationManager.notify(
+                        NOTIFICATION_ID,
+                        buildPlaybackNotification(station, latestProgram, _isPlayingFlow.value)
+                    )
                     RadioWidgetReceiver.notifyWidgetUpdate(this@RadioPlaybackService)
                 }
                 delay(60_000L)
@@ -366,10 +404,10 @@ class RadioPlaybackService : MediaLibraryService() {
                     .setIsPlayable(true)
                     .build()
 
-                    MediaItem.Builder()
-                        .setMediaId(station.id)
-                        .setMediaMetadata(meta)
-                        .build()
+                MediaItem.Builder()
+                    .setMediaId(station.id)
+                    .setMediaMetadata(meta)
+                    .build()
             }
             return Futures.immediateFuture(LibraryResult.ofItemList(ImmutableList.copyOf(items), params))
         }
